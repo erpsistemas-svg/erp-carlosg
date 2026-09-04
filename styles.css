@@ -216,6 +216,7 @@ a { color: var(--color-accent-strong); text-decoration: none; }
   padding: 0 16px;
   border-bottom: 1px solid rgba(255,255,255,0.08);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .sidebar-logo {
@@ -306,10 +307,12 @@ a { color: var(--color-accent-strong); text-decoration: none; }
 }
 
 .sidebar-logo-img {
-  max-height: 32px;
-  max-width: 160px;
+  height: 36px;
+  width: auto;
+  max-width: 170px;
   object-fit: contain;
   display: block;
+  flex-shrink: 0;
 }
 
 .login-logo {

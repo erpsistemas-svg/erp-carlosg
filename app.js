@@ -453,8 +453,8 @@ function MaestroCRUD({ collectionName, title, description, fields }) {
 
   const handleSave = async (data) => {
     try {
-      if (data.id) {
-        const { id, ...rest } = data;
+      const { id, ...rest } = data;
+      if (id) {
         await db.collection(collectionName).doc(id).update({
           ...rest,
           actualizadoEn: firebase.firestore.FieldValue.serverTimestamp(),
@@ -462,8 +462,8 @@ function MaestroCRUD({ collectionName, title, description, fields }) {
         showToast("Cambios guardados.");
       } else {
         await db.collection(collectionName).add({
-          ...data,
-          activo: data.activo !== undefined ? data.activo : true,
+          ...rest,
+          activo: rest.activo !== undefined ? rest.activo : true,
           creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
         });
         showToast("Registro creado.");

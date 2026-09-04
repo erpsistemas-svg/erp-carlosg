@@ -3,6 +3,24 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.4.3] — Corrección de bug
+
+### Corregido
+- El logo en el sidebar se desbordaba del encabezado (rompía el layout,
+  tapando "Buscar página" e "Inicio"). Se le dio un alto fijo de 36px a
+  la imagen y `overflow: hidden` al contenedor, en vez de depender solo
+  de `max-height`, que no lo estaba conteniendo de forma confiable.
+
+## [0.4.2] — Corrección de bug
+
+### Corregido
+- Alta de registros nuevos en Marcas, Líneas, Categorías y Depósitos
+  fallaba con el error "Unsupported field value: undefined" porque el
+  formulario mandaba un campo `id: undefined` dentro del documento
+  nuevo. El mensaje en pantalla decía "revisá los permisos", pero el
+  problema no era de permisos — era este bug. Corregido en
+  `MaestroCRUD` (app.js).
+
 ## [0.4.1] — Ajuste visual
 
 ### Corregido
