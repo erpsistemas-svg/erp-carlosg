@@ -46,7 +46,11 @@ service cloud.firestore {
     /* ---------------------------------------------------------- */
 
     match /configuracion/{docId} {
-      allow read: if isSignedIn();
+      // Lectura pública a propósito: acá solo vive el nombre de la
+      // empresa y el logo, que hay que poder mostrar en la pantalla de
+      // login ANTES de que la persona se autentique. No hay datos
+      // sensibles en esta colección.
+      allow read: if true;
       allow write: if isAdmin();
     }
 

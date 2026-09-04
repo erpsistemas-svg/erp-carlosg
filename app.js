@@ -20,6 +20,46 @@
 
 const { useState, useEffect, useMemo, useCallback } = React;
 
+/**
+ * Redimensiona una imagen (PNG/JPG) en el navegador y la devuelve como
+ * data URL en base64, lista para guardar directo en un documento de
+ * Firestore. No sube nada a ningún servidor: todo pasa en el cliente.
+ * Se limita el tamaño máximo (220px de lado mayor) para que el logo
+ * entre cómodo dentro del límite de 1 MiB por documento de Firestore.
+ */
+function redimensionarImagenADataUrl(file, maxSize = 220) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("El archivo tiene que ser una imagen (PNG o JPG)."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("El archivo no es una imagen válida."));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxSize) { height = Math.round(height * (maxSize / width)); width = maxSize; }
+        } else if (height > maxSize) {
+          width = Math.round(width * (maxSize / height));
+          height = maxSize;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Estructura del menú (orden = flujo de información, sección 3)       */
 /* ------------------------------------------------------------------ */
@@ -107,6 +147,21 @@ function LoginScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [empresaNombre, setEmpresaNombre] = useState("");
+  const [logoDataUrl, setLogoDataUrl] = useState("");
+
+  useEffect(() => {
+    const unsub = db.collection("configuracion").doc("general").onSnapshot(
+      (doc) => {
+        if (doc.exists) {
+          setEmpresaNombre(doc.data().empresaNombre || "");
+          setLogoDataUrl(doc.data().logoDataUrl || "");
+        }
+      },
+      () => {} // sin problema si todavía no hay nada configurado
+    );
+    return () => unsub();
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -124,7 +179,10 @@ function LoginScreen() {
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={handleSubmit}>
-        <div className="login-brand">Carlos Gomes</div>
+        {logoDataUrl ? (
+          <img className="login-logo" src={logoDataUrl} alt={empresaNombre || "Logo de la empresa"} />
+        ) : null}
+        <div className="login-brand">{empresaNombre || "Carlos Gomes"}</div>
         <div className="login-sub">Sistema de gestión comercial</div>
 
         {error ? <div className="form-error">{error}</div> : null}
@@ -169,7 +227,7 @@ function traduceErrorAuth(code) {
 /* Sidebar                                                              */
 /* ------------------------------------------------------------------ */
 
-function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, role }) {
+function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, role, empresaNombre, logoDataUrl }) {
   const [search, setSearch] = useState("");
 
   const filteredMenu = useMemo(() => {
@@ -188,7 +246,13 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <div className="sidebar-logo">Carlos Gomes</div>
+        <div className="sidebar-logo">
+          {logoDataUrl ? (
+            <img className="sidebar-logo-img" src={logoDataUrl} alt={empresaNombre || "Logo"} />
+          ) : (
+            empresaNombre || "Carlos Gomes"
+          )}
+        </div>
         <button className="sidebar-toggle" onClick={onToggle} title="Colapsar menú" aria-label="Colapsar menú">
           {collapsed ? "»" : "«"}
         </button>
@@ -555,6 +619,10 @@ function ConfiguracionPage() {
 
 function EmpresaCard() {
   const [nombre, setNombre] = useState("");
+  const [logoDataUrl, setLogoDataUrl] = useState(""); // logo ya guardado en Firestore
+  const [logoPreview, setLogoPreview] = useState(""); // logo recién elegido, sin guardar
+  const [logoError, setLogoError] = useState("");
+  const [quitarLogo, setQuitarLogo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
@@ -562,6 +630,7 @@ function EmpresaCard() {
   useEffect(() => {
     const unsub = db.collection("configuracion").doc("general").onSnapshot((doc) => {
       setNombre(doc.exists ? (doc.data().empresaNombre || "") : "");
+      setLogoDataUrl(doc.exists ? (doc.data().logoDataUrl || "") : "");
       setLoading(false);
     });
     return () => unsub();
@@ -569,15 +638,33 @@ function EmpresaCard() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2400); };
 
+  const handleFileChange = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setLogoError("");
+    try {
+      const dataUrl = await redimensionarImagenADataUrl(file);
+      setLogoPreview(dataUrl);
+      setQuitarLogo(false);
+    } catch (err) {
+      setLogoError(err.message);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await db.collection("configuracion").doc("general").set(
-        { empresaNombre: nombre.trim() },
-        { merge: true }
-      );
-      showToast("Nombre de la empresa actualizado.");
+      const payload = { empresaNombre: nombre.trim() };
+      if (logoPreview) {
+        payload.logoDataUrl = logoPreview;
+      } else if (quitarLogo) {
+        payload.logoDataUrl = firebase.firestore.FieldValue.delete();
+      }
+      await db.collection("configuracion").doc("general").set(payload, { merge: true });
+      setLogoPreview("");
+      setQuitarLogo(false);
+      showToast("Empresa actualizada.");
     } catch (err) {
       console.error(err);
       showToast("No se pudo guardar. Revisá los permisos.");
@@ -585,6 +672,8 @@ function EmpresaCard() {
       setSaving(false);
     }
   };
+
+  const logoAMostrar = logoPreview || (!quitarLogo ? logoDataUrl : "");
 
   return (
     <div className="card">
@@ -598,6 +687,37 @@ function EmpresaCard() {
               <label>Nombre de la empresa</label>
               <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
             </div>
+
+            <div className="field">
+              <label>Logo (PNG o JPG)</label>
+              {logoAMostrar ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                  <img
+                    src={logoAMostrar}
+                    alt="Logo de la empresa"
+                    style={{ maxHeight: 56, maxWidth: 160, objectFit: "contain", border: "1px solid var(--color-border)", borderRadius: "var(--radius)", padding: 4 }}
+                  />
+                  <button
+                    type="button" className="icon-btn"
+                    onClick={() => { setLogoPreview(""); setQuitarLogo(true); }}
+                  >
+                    Quitar logo
+                  </button>
+                </div>
+              ) : (
+                <p style={{ fontSize: 12, color: "var(--color-text-soft)", marginTop: 0 }}>
+                  Todavía no hay un logo cargado. Se usa el nombre de la empresa como texto.
+                </p>
+              )}
+              <input type="file" accept="image/png,image/jpeg" onChange={handleFileChange} />
+              {logoError ? <div className="form-error" style={{ marginTop: 8 }}>{logoError}</div> : null}
+              <p style={{ fontSize: 11.5, color: "var(--color-text-faint)", marginTop: 6 }}>
+                Se redimensiona automáticamente a un tamaño chico (para la
+                barra lateral y la pantalla de login); no hace falta que la
+                imagen original esté optimizada.
+              </p>
+            </div>
+
             <button className="btn btn-primary" style={{ width: "auto" }} type="submit" disabled={saving}>
               {saving ? "Guardando..." : "Guardar"}
             </button>
@@ -1095,6 +1215,7 @@ function AppShell({ firebaseUser }) {
   const [userDoc, setUserDoc] = useState(null);
   const [userDocLoading, setUserDocLoading] = useState(true);
   const [empresaNombre, setEmpresaNombre] = useState("");
+  const [logoDataUrl, setLogoDataUrl] = useState("");
   const [sucursalNombre, setSucursalNombre] = useState("");
 
   useEffect(() => {
@@ -1111,6 +1232,7 @@ function AppShell({ firebaseUser }) {
   useEffect(() => {
     const unsub = db.collection("configuracion").doc("general").onSnapshot((doc) => {
       setEmpresaNombre(doc.exists ? (doc.data().empresaNombre || "") : "");
+      setLogoDataUrl(doc.exists ? (doc.data().logoDataUrl || "") : "");
     });
     return () => unsub();
   }, []);
@@ -1165,6 +1287,8 @@ function AppShell({ firebaseUser }) {
         activePage={activePage}
         onNavigate={handleNavigate}
         role={role}
+        empresaNombre={empresaNombre}
+        logoDataUrl={logoDataUrl}
       />
       <div>
         <Topbar

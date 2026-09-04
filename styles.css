@@ -305,7 +305,23 @@ a { color: var(--color-accent-strong); text-decoration: none; }
   flex-shrink: 0;
 }
 
+.sidebar-logo-img {
+  max-height: 32px;
+  max-width: 160px;
+  object-fit: contain;
+  display: block;
+}
+
+.login-logo {
+  max-height: 56px;
+  max-width: 100%;
+  object-fit: contain;
+  display: block;
+  margin-bottom: 14px;
+}
+
 .shell.collapsed .sidebar-logo,
+.shell.collapsed .sidebar-logo-img,
 .shell.collapsed .sidebar-search,
 .shell.collapsed .sidebar-group-label,
 .shell.collapsed .sidebar-link span.label,

@@ -3,6 +3,18 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.3.0] — Fase 1 · Base (continuación)
+
+### Agregado
+- Logo de la empresa: se puede subir un PNG o JPG desde Seguridad →
+  Empresa y sucursales. Se redimensiona en el navegador (sin subirlo a
+  ningún servidor) y se guarda como imagen chica dentro del mismo
+  documento de configuración en Firestore. Se muestra en la barra
+  lateral y en la pantalla de login.
+- `configuracion/general` ahora se puede leer sin haber iniciado sesión
+  (nombre de la empresa + logo no son datos sensibles y hacen falta en
+  la pantalla de login).
+
 ## [0.2.0] — Fase 1 · Base (continuación)
 
 ### Agregado
