@@ -3,6 +3,12 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.4.1] — Ajuste visual
+
+### Corregido
+- Logo en la pantalla de login: se agrandó (de 56px a 96px de alto) y
+  se centró horizontalmente arriba del formulario.
+
 ## [0.4.0] — Fase 2 · Maestros de Stock completos
 
 ### Agregado
