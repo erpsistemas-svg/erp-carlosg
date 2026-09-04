@@ -619,6 +619,33 @@ function useColeccionSimple(collectionName) {
   return items;
 }
 
+/**
+ * Genera el código interno del producto usando un contador atómico
+ * (contadores/productos, sección 15.5 de la especificación) y crea el
+ * documento en la misma transacción, para que el código nunca se
+ * pierda o se repita aunque dos personas creen productos al mismo
+ * tiempo.
+ */
+async function crearProductoConCodigo(datosProducto) {
+  const contadorRef = db.collection("contadores").doc("productos");
+  const nuevoProductoRef = db.collection("productos").doc();
+
+  await db.runTransaction(async (tx) => {
+    const contadorDoc = await tx.get(contadorRef);
+    const actual = contadorDoc.exists ? (contadorDoc.data().ultimo || 0) : 0;
+    const siguiente = actual + 1;
+    const codigoInterno = "P-" + String(siguiente).padStart(6, "0");
+
+    tx.set(contadorRef, { ultimo: siguiente }, { merge: true });
+    tx.set(nuevoProductoRef, {
+      ...datosProducto,
+      codigoInterno,
+      activo: true,
+      creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+}
+
 function ProductosPage() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -630,7 +657,7 @@ function ProductosPage() {
   const categorias = useColeccionSimple("categorias");
 
   useEffect(() => {
-    const unsub = db.collection("productos").orderBy("nombre").onSnapshot(
+    const unsub = db.collection("productos").orderBy("codigoInterno", "desc").onSnapshot(
       (snap) => {
         setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setLoading(false);
@@ -640,9 +667,11 @@ function ProductosPage() {
     return () => unsub();
   }, []);
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2400); };
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
 
   const nombrePorId = (lista, id) => (lista.find((x) => x.id === id) || {}).nombre || "—";
+
+  const formatearGs = (valor) => valor != null ? `Gs. ${Number(valor).toLocaleString("es-PY")}` : "—";
 
   const handleSave = async (data) => {
     try {
@@ -654,11 +683,7 @@ function ProductosPage() {
         });
         showToast("Producto actualizado.");
       } else {
-        await db.collection("productos").add({
-          ...rest,
-          activo: true,
-          creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
-        });
+        await crearProductoConCodigo(rest);
         showToast("Producto creado.");
       }
       setEditing(null);
@@ -682,7 +707,7 @@ function ProductosPage() {
       <div className="page-header">
         <div>
           <h1>Productos</h1>
-          <p>Ficha de producto: marca, línea, categoría y precio de venta. El stock por depósito se carga desde Movimientos de stock (todavía no disponible).</p>
+          <p>Código interno autogenerado, código de barra, marca/línea/categoría y precios mayorista/minorista. El stock por depósito se carga desde Movimientos de stock (todavía no disponible).</p>
         </div>
         <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setEditing({})}>
           + Nuevo
@@ -694,32 +719,45 @@ function ProductosPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Nombre</th>
-                <th>Código</th>
+                <th>Código interno</th>
+                <th>Nombre / Descripción</th>
+                <th>Código de barra</th>
                 <th>Marca</th>
                 <th>Línea</th>
                 <th>Categoría</th>
-                <th>Precio venta</th>
+                <th>Precio mayorista</th>
+                <th>Cant. mayorista</th>
+                <th>Precio minorista</th>
                 <th>Estado</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8}>Cargando...</td></tr>
+                <tr><td colSpan={11}>Cargando...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={8} style={{ color: "var(--color-text-soft)" }}>
+                <tr><td colSpan={11} style={{ color: "var(--color-text-soft)" }}>
                   Todavía no hay productos. Usá "+ Nuevo" para crear el primero
                   {marcas.length === 0 ? " (necesitás al menos una marca cargada)." : "."}
                 </td></tr>
               ) : items.map((p) => (
                 <tr key={p.id}>
+                  <td>{p.codigoInterno || "—"}</td>
                   <td>{p.nombre}</td>
-                  <td>{p.codigo || "—"}</td>
+                  <td>
+                    {p.codigoBarraPrincipal || "—"}
+                    {p.codigosBarraAdicionales && p.codigosBarraAdicionales.length > 0 ? (
+                      <span style={{ color: "var(--color-text-soft)", fontSize: 11.5 }}>
+                        {" "}(+{p.codigosBarraAdicionales.length})
+                      </span>
+                    ) : null}
+                  </td>
                   <td>{nombrePorId(marcas, p.marcaId)}</td>
                   <td>{nombrePorId(lineas, p.lineaId)}</td>
                   <td>{nombrePorId(categorias, p.categoriaId)}</td>
-                  <td>{p.precioVenta != null ? `Gs. ${Number(p.precioVenta).toLocaleString("es-PY")}` : "—"}</td>
+                  <td>{formatearGs(p.precioMayorista)}</td>
+                  <td>{p.cantidadMayorista != null ? p.cantidadMayorista : "—"}</td>
+                  <td>{formatearGs(p.precioMinorista)}</td>
                   <td>
                     <span className={"status-pill " + (p.activo ? "active" : "inactive")}>
                       {p.activo ? "Activo" : "Inactivo"}
@@ -758,12 +796,21 @@ function ProductosPage() {
 
 function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSave }) {
   const [nombre, setNombre] = useState(initial.nombre || "");
-  const [codigo, setCodigo] = useState(initial.codigo || "");
+  const [codigoBarraPrincipal, setCodigoBarraPrincipal] = useState(initial.codigoBarraPrincipal || "");
+  const [codigosAdicionales, setCodigosAdicionales] = useState(initial.codigosBarraAdicionales || []);
   const [marcaId, setMarcaId] = useState(initial.marcaId || "");
   const [lineaId, setLineaId] = useState(initial.lineaId || "");
   const [categoriaId, setCategoriaId] = useState(initial.categoriaId || "");
-  const [precioVenta, setPrecioVenta] = useState(initial.precioVenta != null ? String(initial.precioVenta) : "");
+  const [precioMayorista, setPrecioMayorista] = useState(initial.precioMayorista != null ? String(initial.precioMayorista) : "");
+  const [cantidadMayorista, setCantidadMayorista] = useState(initial.cantidadMayorista != null ? String(initial.cantidadMayorista) : "");
+  const [precioMinorista, setPrecioMinorista] = useState(initial.precioMinorista != null ? String(initial.precioMinorista) : "");
   const [saving, setSaving] = useState(false);
+
+  const agregarCodigoAdicional = () => setCodigosAdicionales((arr) => [...arr, ""]);
+  const cambiarCodigoAdicional = (i, valor) =>
+    setCodigosAdicionales((arr) => arr.map((c, idx) => (idx === i ? valor : c)));
+  const quitarCodigoAdicional = (i) =>
+    setCodigosAdicionales((arr) => arr.filter((_, idx) => idx !== i));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -771,11 +818,14 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
     await onSave({
       id: initial.id,
       nombre,
-      codigo: codigo || null,
+      codigoBarraPrincipal: codigoBarraPrincipal || null,
+      codigosBarraAdicionales: codigosAdicionales.map((c) => c.trim()).filter(Boolean),
       marcaId: marcaId || null,
       lineaId: lineaId || null,
       categoriaId: categoriaId || null,
-      precioVenta: precioVenta === "" ? null : Number(precioVenta),
+      precioMayorista: precioMayorista === "" ? null : Number(precioMayorista),
+      cantidadMayorista: cantidadMayorista === "" ? null : Number(cantidadMayorista),
+      precioMinorista: precioMinorista === "" ? null : Number(precioMinorista),
     });
     setSaving(false);
   };
@@ -789,14 +839,44 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
             <button type="button" className="modal-close" onClick={onClose}>×</button>
           </div>
           <div className="modal-body">
+            {initial.id ? (
+              <div className="field">
+                <label>Código interno</label>
+                <input value={initial.codigoInterno || ""} disabled style={{ background: "var(--color-bg)", color: "var(--color-text-soft)" }} />
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: "var(--color-text-soft)", marginTop: 0 }}>
+                El código interno se genera automáticamente al guardar.
+              </p>
+            )}
+
             <div className="field">
-              <label>Nombre</label>
+              <label>Nombre / Descripción</label>
               <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
             </div>
+
             <div className="field">
-              <label>Código / SKU (opcional)</label>
-              <input value={codigo} onChange={(e) => setCodigo(e.target.value)} />
+              <label>Código de barra</label>
+              <input value={codigoBarraPrincipal} onChange={(e) => setCodigoBarraPrincipal(e.target.value)} placeholder="El que viene en la caja" />
             </div>
+
+            <div className="field">
+              <label>Códigos de barra adicionales (opcional)</label>
+              {codigosAdicionales.map((c, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                  <input
+                    value={c}
+                    onChange={(e) => cambiarCodigoAdicional(i, e.target.value)}
+                    placeholder={`Código adicional ${i + 1}`}
+                  />
+                  <button type="button" className="icon-btn" onClick={() => quitarCodigoAdicional(i)}>Quitar</button>
+                </div>
+              ))}
+              <button type="button" className="btn btn-secondary" style={{ width: "auto", marginTop: 4 }} onClick={agregarCodigoAdicional}>
+                + Agregar código de barra
+              </button>
+            </div>
+
             <div className="field">
               <label>Marca</label>
               <select value={marcaId} onChange={(e) => setMarcaId(e.target.value)}>
@@ -818,11 +898,27 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
                 {categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
               </select>
             </div>
+
             <div className="field">
-              <label>Precio de venta (Gs.)</label>
+              <label>Precio de venta mayorista (Gs.)</label>
               <input
                 type="number" min="0" step="1"
-                value={precioVenta} onChange={(e) => setPrecioVenta(e.target.value)}
+                value={precioMayorista} onChange={(e) => setPrecioMayorista(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label>Cantidad mayorista</label>
+              <input
+                type="number" min="0" step="1"
+                value={cantidadMayorista} onChange={(e) => setCantidadMayorista(e.target.value)}
+                placeholder="A partir de cuántas unidades se aplica el precio mayorista"
+              />
+            </div>
+            <div className="field">
+              <label>Precio de venta minorista (Gs.)</label>
+              <input
+                type="number" min="0" step="1"
+                value={precioMinorista} onChange={(e) => setPrecioMinorista(e.target.value)}
               />
             </div>
           </div>

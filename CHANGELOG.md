@@ -3,6 +3,27 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.5.0] — Ficha de Productos ampliada
+
+### Agregado
+- Código interno autogenerado (formato `P-000001`), usando un contador
+  atómico en `contadores/productos` (sección 15.5 de la especificación)
+  para que nunca se repita o se pierda un código aunque dos personas
+  creen productos al mismo tiempo. No es editable una vez creado.
+- Código de barra principal + botón para agregar códigos de barra
+  adicionales (variantes, presentaciones, códigos viejos, etc.).
+- Precio de venta mayorista y minorista por separado, más "Cantidad
+  mayorista": a partir de cuántas unidades se aplica el precio
+  mayorista (ese cálculo se usará más adelante en el POS, todavía no
+  construido).
+
+### Cambiado
+- Se sacaron los campos viejos "Código / SKU" y "Precio de venta"
+  únicos — quedan reemplazados por los de arriba. Si ya habías cargado
+  productos con el formulario anterior, esos registros no van a tener
+  código interno (se asigna solo al crear, no al editar) — avisame si
+  los querés migrar y armamos un script para asignárselo.
+
 ## [0.4.3] — Corrección de bug
 
 ### Corregido
