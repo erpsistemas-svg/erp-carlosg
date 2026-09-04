@@ -4,9 +4,10 @@
  *
  * FASE 1 · BASE — según sección 19 de la especificación funcional.
  * Incluye: login, layout general (sidebar + topbar), menú completo del
- * sistema, módulo de Seguridad (Usuarios) y el PATRÓN de maestro CRUD
- * (Marcas) que debe replicarse para el resto de los maestros de Stock
- * (Líneas, Categorías, Colores, Depósitos, etc.).
+ * sistema, módulo de Seguridad (Usuarios + alta de nuevas cuentas),
+ * Configuración (Empresa y sucursales) y el PATRÓN de maestro CRUD
+ * (Marcas, Líneas) que debe replicarse para el resto de los maestros de
+ * Stock (Categorías, Colores, Depósitos, etc.).
  *
  * Los módulos que todavía no se ejecutan (Facturación electrónica,
  * Tienda Online, Contabilidad) se muestran en el menú pero con pantalla
@@ -29,7 +30,7 @@ const MENU = [
     key: "stock", label: "Stock", icon: "ST",
     children: [
       { key: "marcas", label: "Marcas" },
-      { key: "lineas", label: "Líneas", soon: true },
+      { key: "lineas", label: "Líneas" },
       { key: "categorias", label: "Categorías", soon: true },
       { key: "productos", label: "Productos", soon: true },
       { key: "depositos", label: "Depósitos", soon: true },
@@ -85,6 +86,7 @@ const MENU = [
     key: "seguridad", label: "Seguridad", icon: "SE",
     children: [
       { key: "usuarios", label: "Usuarios" },
+      { key: "configuracion", label: "Empresa y sucursales" },
       { key: "roles", label: "Roles", soon: true },
     ],
   },
@@ -246,14 +248,14 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
 /* Topbar                                                               */
 /* ------------------------------------------------------------------ */
 
-function Topbar({ userDoc, firebaseUser, onLogout }) {
+function Topbar({ userDoc, firebaseUser, onLogout, empresaNombre, sucursalNombre }) {
   const initials = (userDoc?.nombre || firebaseUser.email || "?").slice(0, 2).toUpperCase();
   return (
     <header className="topbar">
       <div className="topbar-context">
-        <span>Empresa:</span> <strong>Carlos Gomes</strong>
+        <span>Empresa:</span> <strong>{empresaNombre || "—"}</strong>
         <span>·</span>
-        <span>Sucursal:</span> <strong>Casa Central</strong>
+        <span>Sucursal:</span> <strong>{sucursalNombre || "—"}</strong>
       </div>
       <div className="topbar-user">
         <div className="user-chip">
@@ -533,13 +535,276 @@ function MaestroFormModal({ fields, initial, onClose, onSave }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Configuración · Empresa y sucursales                                 */
+/* ------------------------------------------------------------------ */
+
+function ConfiguracionPage() {
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Empresa y sucursales</h1>
+          <p>Datos que aparecen en la barra superior y, más adelante, en comprobantes e informes.</p>
+        </div>
+      </div>
+      <EmpresaCard />
+      <SucursalesCard />
+    </div>
+  );
+}
+
+function EmpresaCard() {
+  const [nombre, setNombre] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    const unsub = db.collection("configuracion").doc("general").onSnapshot((doc) => {
+      setNombre(doc.exists ? (doc.data().empresaNombre || "") : "");
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2400); };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await db.collection("configuracion").doc("general").set(
+        { empresaNombre: nombre.trim() },
+        { merge: true }
+      );
+      showToast("Nombre de la empresa actualizado.");
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar. Revisá los permisos.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header"><h3>Empresa</h3></div>
+      <div className="card-body">
+        {loading ? (
+          <p style={{ color: "var(--color-text-soft)", fontSize: 13 }}>Cargando...</p>
+        ) : (
+          <form onSubmit={handleSubmit} style={{ maxWidth: 360 }}>
+            <div className="field">
+              <label>Nombre de la empresa</label>
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+            </div>
+            <button className="btn btn-primary" style={{ width: "auto" }} type="submit" disabled={saving}>
+              {saving ? "Guardando..." : "Guardar"}
+            </button>
+          </form>
+        )}
+      </div>
+      {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}
+
+function SucursalesCard() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    const unsub = db.collection("sucursales").orderBy("nombre").onSnapshot((snap) => {
+      setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
+
+  const handleSave = async (data) => {
+    try {
+      const { id, ...rest } = data;
+      if (id) {
+        await db.collection("sucursales").doc(id).update(rest);
+      } else {
+        await db.collection("sucursales").add({
+          ...rest,
+          activo: true,
+          creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      // Si esta sucursal quedó marcada como predeterminada, desmarcar las demás.
+      if (rest.predeterminada) {
+        const batch = db.batch();
+        const otras = await db.collection("sucursales").get();
+        otras.docs.forEach((d) => {
+          if (d.id !== id) batch.update(d.ref, { predeterminada: false });
+        });
+        await batch.commit();
+      }
+      showToast("Sucursal guardada.");
+      setEditing(null);
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar. Revisá los permisos.");
+    }
+  };
+
+  const toggleActivo = async (item) => {
+    try {
+      await db.collection("sucursales").doc(item.id).update({ activo: !item.activo });
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo cambiar el estado.");
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3>Sucursales</h3>
+        <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setEditing({})}>
+          + Nueva
+        </button>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr><th>Nombre</th><th>Dirección</th><th>Predeterminada</th><th>Estado</th><th></th></tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5}>Cargando...</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={5} style={{ color: "var(--color-text-soft)" }}>
+                Todavía no hay sucursales. Usá "+ Nueva" para crear la primera (por ejemplo, "Casa Central").
+              </td></tr>
+            ) : items.map((s) => (
+              <tr key={s.id}>
+                <td>{s.nombre}</td>
+                <td>{s.direccion || "—"}</td>
+                <td>{s.predeterminada ? "Sí" : ""}</td>
+                <td>
+                  <span className={"status-pill " + (s.activo ? "active" : "inactive")}>
+                    {s.activo ? "Activa" : "Inactiva"}
+                  </span>
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="icon-btn" onClick={() => setEditing(s)}>Editar</button>
+                    <button className="icon-btn" onClick={() => toggleActivo(s)}>
+                      {s.activo ? "Desactivar" : "Activar"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {editing !== null ? (
+        <SucursalFormModal initial={editing} onClose={() => setEditing(null)} onSave={handleSave} />
+      ) : null}
+
+      {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}
+
+function SucursalFormModal({ initial, onClose, onSave }) {
+  const [nombre, setNombre] = useState(initial.nombre || "");
+  const [direccion, setDireccion] = useState(initial.direccion || "");
+  const [predeterminada, setPredeterminada] = useState(initial.predeterminada || false);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    await onSave({ id: initial.id, nombre, direccion, predeterminada });
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <form onSubmit={handleSubmit}>
+          <div className="modal-header">
+            <h3>{initial.id ? "Editar sucursal" : "Nueva sucursal"}</h3>
+            <button type="button" className="modal-close" onClick={onClose}>×</button>
+          </div>
+          <div className="modal-body">
+            <div className="field">
+              <label>Nombre</label>
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Dirección (opcional)</label>
+              <input value={direccion} onChange={(e) => setDireccion(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>
+                <input
+                  type="checkbox" checked={predeterminada}
+                  onChange={(e) => setPredeterminada(e.target.checked)}
+                  style={{ width: "auto", marginRight: 8 }}
+                />
+                Usar como sucursal predeterminada (se muestra en la barra superior)
+              </label>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+            <button type="submit" className="btn btn-primary" style={{ width: "auto" }} disabled={saving}>
+              {saving ? "Guardando..." : "Guardar"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Seguridad · Usuarios                                                 */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Crea un usuario nuevo en Firebase Authentication SIN cerrar la sesión
+ * del admin que está logueado. Truco estándar para apps sin backend:
+ * se abre una instancia secundaria de Firebase (con la misma config),
+ * se crea el usuario ahí, y se la descarta. El documento en Firestore
+ * se escribe con la sesión PRINCIPAL (la del admin), así que respeta
+ * firestore.rules normalmente.
+ */
+async function crearUsuarioConAuth({ email, password, nombre, rol }) {
+  const secondaryApp = firebase.initializeApp(firebaseConfig, "Secondary-" + Date.now());
+  try {
+    const cred = await secondaryApp.auth().createUserWithEmailAndPassword(email.trim(), password);
+    const uid = cred.user.uid;
+    await secondaryApp.auth().signOut();
+    await db.collection("usuarios").doc(uid).set({
+      nombre: nombre.trim(),
+      email: email.trim(),
+      rol,
+      activo: true,
+      creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    return uid;
+  } finally {
+    await secondaryApp.delete();
+  }
+}
 
 function UsuariosPage({ currentUid }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -555,22 +820,19 @@ function UsuariosPage({ currentUid }) {
   const handleSave = async (data) => {
     try {
       const { id, ...rest } = data;
-      if (id) {
-        await db.collection("usuarios").doc(id).update(rest);
-        showToast("Usuario actualizado.");
-      } else {
-        showToast(
-          "Este formulario solo edita el perfil (nombre/rol) de un usuario " +
-          "ya existente. Para crear un usuario nuevo hay que darlo de alta " +
-          "primero en Firebase Authentication y luego crear su documento " +
-          "usuarios/{uid} — ver README.md, sección Seguridad."
-        );
-      }
+      await db.collection("usuarios").doc(id).update(rest);
+      showToast("Usuario actualizado.");
       setEditing(null);
     } catch (err) {
       console.error(err);
       showToast("No se pudo guardar. Revisá los permisos.");
     }
+  };
+
+  const handleCreate = async (data) => {
+    await crearUsuarioConAuth(data);
+    showToast(`Usuario creado. Compartile el correo y la contraseña a ${data.nombre}.`);
+    setCreating(false);
   };
 
   return (
@@ -579,11 +841,13 @@ function UsuariosPage({ currentUid }) {
         <div>
           <h1>Usuarios</h1>
           <p>
-            Authentication y el documento usuarios/{"{uid}"} son sistemas
-            separados y deben administrarse en conjunto (sección 16 de la
-            especificación).
+            Creá cuentas nuevas del equipo acá mismo — se registran en
+            Firebase Authentication y en Firestore en un solo paso.
           </p>
         </div>
+        <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setCreating(true)}>
+          + Nuevo
+        </button>
       </div>
 
       <div className="card">
@@ -629,7 +893,89 @@ function UsuariosPage({ currentUid }) {
         />
       ) : null}
 
+      {creating ? (
+        <NuevoUsuarioModal
+          onClose={() => setCreating(false)}
+          onCreate={handleCreate}
+        />
+      ) : null}
+
       {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}
+
+function NuevoUsuarioModal({ onClose, onCreate }) {
+  const [nombre, setNombre] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [rol, setRol] = useState(ROLES.VENDEDOR);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (password.length < 6) {
+      setError("La contraseña debe tener al menos 6 caracteres.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onCreate({ nombre, email, password, rol });
+    } catch (err) {
+      console.error(err);
+      setError(traduceErrorAuth(err.code));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <form onSubmit={handleSubmit}>
+          <div className="modal-header">
+            <h3>Nuevo usuario</h3>
+            <button type="button" className="modal-close" onClick={onClose}>×</button>
+          </div>
+          <div className="modal-body">
+            {error ? <div className="form-error">{error}</div> : null}
+            <div className="field">
+              <label>Nombre</label>
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Correo electrónico</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Contraseña inicial</label>
+              <input
+                type="text" value={password} onChange={(e) => setPassword(e.target.value)}
+                placeholder="mínimo 6 caracteres" required
+              />
+            </div>
+            <div className="field">
+              <label>Rol</label>
+              <select value={rol} onChange={(e) => setRol(e.target.value)}>
+                {Object.values(ROLES).map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--color-text-soft)" }}>
+              Después de crearlo, compartile el correo y esta contraseña por
+              un canal seguro. Todavía no hay una pantalla de "cambiar mi
+              contraseña" — quedará para una próxima entrega.
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+            <button type="submit" className="btn btn-primary" style={{ width: "auto" }} disabled={saving}>
+              {saving ? "Creando..." : "Crear usuario"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -710,8 +1056,23 @@ function PageContent({ moduleKey, pageKey, currentUid }) {
     );
   }
 
+  if (moduleKey === "stock" && pageKey === "lineas") {
+    return (
+      <MaestroCRUD
+        collectionName="lineas"
+        title="Líneas"
+        description="Maestro de líneas de producto (por ejemplo, dentro de una marca: línea femenina, masculina, infantil)."
+        fields={[{ name: "nombre", label: "Nombre", required: true }]}
+      />
+    );
+  }
+
   if (moduleKey === "seguridad" && pageKey === "usuarios") {
     return <UsuariosPage currentUid={currentUid} />;
+  }
+
+  if (moduleKey === "seguridad" && pageKey === "configuracion") {
+    return <ConfiguracionPage />;
   }
 
   const pageDef = ALL_PAGE_LABELS.find((p) => p.moduleKey === moduleKey && p.key === pageKey);
@@ -733,6 +1094,8 @@ function AppShell({ firebaseUser }) {
   const [activePage, setActivePage] = useState(null);
   const [userDoc, setUserDoc] = useState(null);
   const [userDocLoading, setUserDocLoading] = useState(true);
+  const [empresaNombre, setEmpresaNombre] = useState("");
+  const [sucursalNombre, setSucursalNombre] = useState("");
 
   useEffect(() => {
     const unsub = db.collection("usuarios").doc(firebaseUser.uid).onSnapshot(
@@ -744,6 +1107,23 @@ function AppShell({ firebaseUser }) {
     );
     return () => unsub();
   }, [firebaseUser.uid]);
+
+  useEffect(() => {
+    const unsub = db.collection("configuracion").doc("general").onSnapshot((doc) => {
+      setEmpresaNombre(doc.exists ? (doc.data().empresaNombre || "") : "");
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = db.collection("sucursales")
+      .where("predeterminada", "==", true)
+      .limit(1)
+      .onSnapshot((snap) => {
+        setSucursalNombre(snap.empty ? "" : snap.docs[0].data().nombre || "");
+      });
+    return () => unsub();
+  }, []);
 
   const handleNavigate = useCallback((moduleKey, pageKey) => {
     setActiveModule(moduleKey);
@@ -787,7 +1167,13 @@ function AppShell({ firebaseUser }) {
         role={role}
       />
       <div>
-        <Topbar userDoc={userDoc} firebaseUser={firebaseUser} onLogout={handleLogout} />
+        <Topbar
+          userDoc={userDoc}
+          firebaseUser={firebaseUser}
+          onLogout={handleLogout}
+          empresaNombre={empresaNombre}
+          sucursalNombre={sucursalNombre}
+        />
         <main className="content">
           <PageContent moduleKey={activeModule} pageKey={activePage} currentUid={firebaseUser.uid} />
         </main>

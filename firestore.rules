@@ -45,8 +45,23 @@ service cloud.firestore {
     /* usuarios/{uid} — perfil de aplicación, separado de Auth      */
     /* ---------------------------------------------------------- */
 
+    match /configuracion/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /sucursales/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if hasRole(['admin', 'gerencia']);
+      allow delete: if false; // baja lógica (activo:false), nunca borrado físico
+    }
+
     match /usuarios/{uid} {
       allow read: if isSignedIn();
+      // El módulo de Seguridad crea el documento del usuario nuevo
+      // usando la sesión del admin (ver crearUsuarioConAuth en app.js);
+      // por eso esta regla evalúa el rol de quien está autenticado, no
+      // el UID del documento que se está creando.
       allow create: if isAdmin();
       // Un usuario puede actualizar campos no sensibles de su propio
       // perfil; solo un admin puede cambiar el rol o el estado activo.
