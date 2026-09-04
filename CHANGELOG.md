@@ -3,6 +3,27 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.6.0] — Responsive + imagen de producto
+
+### Agregado
+- **Imagen de producto**: se puede subir una foto (PNG/JPG) por producto,
+  con el mismo mecanismo que el logo de la empresa — se redimensiona y
+  comprime en el navegador (JPEG, hasta 480px de lado mayor) y se guarda
+  como imagen chica en el propio documento de Firestore, sin necesitar
+  Firebase Storage. Se ve como miniatura en la tabla y en grande dentro
+  del formulario.
+- **Layout responsive**: por debajo de 860px de ancho, el menú lateral
+  pasa a ser un panel deslizable que se abre con el botón ☰ en la barra
+  superior (antes directamente desaparecía y no había forma de navegar
+  desde el celular). Se ajustaron además el padding del contenido, las
+  tarjetas de KPIs/módulos, el tamaño de las tablas y la barra superior
+  para pantallas angostas.
+
+### Notas técnicas
+- El helper `redimensionarImagenADataUrl` ahora acepta formato y calidad
+  de salida (antes siempre PNG) para poder comprimir mejor las fotos de
+  producto sin tocar el comportamiento del logo.
+
 ## [0.5.0] — Ficha de Productos ampliada
 
 ### Agregado

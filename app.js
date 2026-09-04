@@ -28,7 +28,7 @@ const { useState, useEffect, useMemo, useCallback } = React;
  * Se limita el tamaño máximo (220px de lado mayor) para que el logo
  * entre cómodo dentro del límite de 1 MiB por documento de Firestore.
  */
-function redimensionarImagenADataUrl(file, maxSize = 220) {
+function redimensionarImagenADataUrl(file, maxSize = 220, formato = "image/png", calidad = 0.92) {
   return new Promise((resolve, reject) => {
     if (!file.type.startsWith("image/")) {
       reject(new Error("El archivo tiene que ser una imagen (PNG o JPG)."));
@@ -51,9 +51,15 @@ function redimensionarImagenADataUrl(file, maxSize = 220) {
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, width, height);
+        if (formato === "image/jpeg") {
+          // JPEG no soporta transparencia: fondo blanco para que no quede negro.
+          ctx.fillStyle = "#FFFFFF";
+          ctx.fillRect(0, 0, width, height);
+        } else {
+          ctx.clearRect(0, 0, width, height);
+        }
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/png"));
+        resolve(canvas.toDataURL(formato, calidad));
       };
       img.src = reader.result;
     };
@@ -228,7 +234,7 @@ function traduceErrorAuth(code) {
 /* Sidebar                                                              */
 /* ------------------------------------------------------------------ */
 
-function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, role, empresaNombre, logoDataUrl }) {
+function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, role, empresaNombre, logoDataUrl, onCloseMobile }) {
   const [search, setSearch] = useState("");
 
   const filteredMenu = useMemo(() => {
@@ -244,6 +250,11 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
       .filter(Boolean);
   }, [search]);
 
+  const handleNavigate = (moduleKey, pageKey) => {
+    onNavigate(moduleKey, pageKey);
+    if (onCloseMobile) onCloseMobile();
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -256,6 +267,9 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
         </div>
         <button className="sidebar-toggle" onClick={onToggle} title="Colapsar menú" aria-label="Colapsar menú">
           {collapsed ? "»" : "«"}
+        </button>
+        <button className="sidebar-close" onClick={onCloseMobile} title="Cerrar menú" aria-label="Cerrar menú">
+          ×
         </button>
       </div>
 
@@ -276,7 +290,7 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
               <button
                 key={m.key}
                 className={"sidebar-link" + (isActiveModule ? " active" : "")}
-                onClick={() => onNavigate(m.key, null)}
+                onClick={() => handleNavigate(m.key, null)}
               >
                 <span className="dot" />
                 <span className="label">{m.label}</span>
@@ -292,7 +306,7 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
                 <button
                   key={c.key}
                   className={"sidebar-link" + (isActiveModule && activePage === c.key ? " active" : "")}
-                  onClick={() => onNavigate(m.key, c.key)}
+                  onClick={() => handleNavigate(m.key, c.key)}
                 >
                   <span className="dot" />
                   <span className="label">{c.label}</span>
@@ -313,10 +327,13 @@ function Sidebar({ collapsed, onToggle, activeModule, activePage, onNavigate, ro
 /* Topbar                                                               */
 /* ------------------------------------------------------------------ */
 
-function Topbar({ userDoc, firebaseUser, onLogout, empresaNombre, sucursalNombre }) {
+function Topbar({ userDoc, firebaseUser, onLogout, empresaNombre, sucursalNombre, onOpenMobileNav }) {
   const initials = (userDoc?.nombre || firebaseUser.email || "?").slice(0, 2).toUpperCase();
   return (
     <header className="topbar">
+      <button className="mobile-menu-btn" onClick={onOpenMobileNav} aria-label="Abrir menú">
+        ☰
+      </button>
       <div className="topbar-context">
         <span>Empresa:</span> <strong>{empresaNombre || "—"}</strong>
         <span>·</span>
@@ -719,6 +736,7 @@ function ProductosPage() {
           <table className="data-table">
             <thead>
               <tr>
+                <th></th>
                 <th>Código interno</th>
                 <th>Nombre / Descripción</th>
                 <th>Código de barra</th>
@@ -734,14 +752,21 @@ function ProductosPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={11}>Cargando...</td></tr>
+                <tr><td colSpan={12}>Cargando...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={11} style={{ color: "var(--color-text-soft)" }}>
+                <tr><td colSpan={12} style={{ color: "var(--color-text-soft)" }}>
                   Todavía no hay productos. Usá "+ Nuevo" para crear el primero
                   {marcas.length === 0 ? " (necesitás al menos una marca cargada)." : "."}
                 </td></tr>
               ) : items.map((p) => (
                 <tr key={p.id}>
+                  <td>
+                    {p.imagenDataUrl ? (
+                      <img src={p.imagenDataUrl} alt={p.nombre} className="producto-thumb" />
+                    ) : (
+                      <div className="producto-thumb producto-thumb-empty" />
+                    )}
+                  </td>
                   <td>{p.codigoInterno || "—"}</td>
                   <td>{p.nombre}</td>
                   <td>
@@ -796,6 +821,10 @@ function ProductosPage() {
 
 function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSave }) {
   const [nombre, setNombre] = useState(initial.nombre || "");
+  const [imagenDataUrl, setImagenDataUrl] = useState(initial.imagenDataUrl || "");
+  const [imagenNueva, setImagenNueva] = useState("");
+  const [quitarImagen, setQuitarImagen] = useState(false);
+  const [imagenError, setImagenError] = useState("");
   const [codigoBarraPrincipal, setCodigoBarraPrincipal] = useState(initial.codigoBarraPrincipal || "");
   const [codigosAdicionales, setCodigosAdicionales] = useState(initial.codigosBarraAdicionales || []);
   const [marcaId, setMarcaId] = useState(initial.marcaId || "");
@@ -812,10 +841,31 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
   const quitarCodigoAdicional = (i) =>
     setCodigosAdicionales((arr) => arr.filter((_, idx) => idx !== i));
 
+  const handleImagenChange = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setImagenError("");
+    try {
+      const dataUrl = await redimensionarImagenADataUrl(file, 480, "image/jpeg", 0.8);
+      setImagenNueva(dataUrl);
+      setQuitarImagen(false);
+    } catch (err) {
+      setImagenError(err.message);
+    }
+  };
+
+  const handleQuitarImagen = () => {
+    setImagenNueva("");
+    // Solo marcar "quitar" (que manda FieldValue.delete()) si había una
+    // imagen ya guardada; si era una recién elegida y todavía no se
+    // guardó, alcanza con limpiar la selección.
+    if (initial.imagenDataUrl) setQuitarImagen(true);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    await onSave({
+    const payload = {
       id: initial.id,
       nombre,
       codigoBarraPrincipal: codigoBarraPrincipal || null,
@@ -826,9 +876,17 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
       precioMayorista: precioMayorista === "" ? null : Number(precioMayorista),
       cantidadMayorista: cantidadMayorista === "" ? null : Number(cantidadMayorista),
       precioMinorista: precioMinorista === "" ? null : Number(precioMinorista),
-    });
+    };
+    if (imagenNueva) {
+      payload.imagenDataUrl = imagenNueva;
+    } else if (quitarImagen) {
+      payload.imagenDataUrl = firebase.firestore.FieldValue.delete();
+    }
+    await onSave(payload);
     setSaving(false);
   };
+
+  const imagenAMostrar = imagenNueva || (!quitarImagen ? imagenDataUrl : "");
 
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -839,6 +897,26 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
             <button type="button" className="modal-close" onClick={onClose}>×</button>
           </div>
           <div className="modal-body">
+            <div className="field">
+              <label>Imagen del producto (opcional)</label>
+              {imagenAMostrar ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                  <img
+                    src={imagenAMostrar}
+                    alt={nombre || "Producto"}
+                    style={{ width: 72, height: 72, objectFit: "cover", border: "1px solid var(--color-border)", borderRadius: "var(--radius)" }}
+                  />
+                  <button type="button" className="icon-btn" onClick={handleQuitarImagen}>Quitar imagen</button>
+                </div>
+              ) : (
+                <p style={{ fontSize: 12, color: "var(--color-text-soft)", marginTop: 0 }}>
+                  Todavía no hay una foto cargada para este producto.
+                </p>
+              )}
+              <input type="file" accept="image/png,image/jpeg" onChange={handleImagenChange} />
+              {imagenError ? <div className="form-error" style={{ marginTop: 8 }}>{imagenError}</div> : null}
+            </div>
+
             {initial.id ? (
               <div className="field">
                 <label>Código interno</label>
@@ -1575,6 +1653,7 @@ function PageContent({ moduleKey, pageKey, currentUid }) {
 
 function AppShell({ firebaseUser }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [activeModule, setActiveModule] = useState("inicio");
   const [activePage, setActivePage] = useState(null);
   const [userDoc, setUserDoc] = useState(null);
@@ -1644,7 +1723,8 @@ function AppShell({ firebaseUser }) {
   const role = userDoc.rol;
 
   return (
-    <div className={"shell" + (collapsed ? " collapsed" : "")}>
+    <div className={"shell" + (collapsed ? " collapsed" : "") + (mobileNavOpen ? " mobile-nav-open" : "")}>
+      <div className="mobile-nav-backdrop" onClick={() => setMobileNavOpen(false)} />
       <Sidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((c) => !c)}
@@ -1654,6 +1734,7 @@ function AppShell({ firebaseUser }) {
         role={role}
         empresaNombre={empresaNombre}
         logoDataUrl={logoDataUrl}
+        onCloseMobile={() => setMobileNavOpen(false)}
       />
       <div>
         <Topbar
@@ -1662,6 +1743,7 @@ function AppShell({ firebaseUser }) {
           onLogout={handleLogout}
           empresaNombre={empresaNombre}
           sucursalNombre={sucursalNombre}
+          onOpenMobileNav={() => setMobileNavOpen(true)}
         />
         <main className="content">
           <PageContent moduleKey={activeModule} pageKey={activePage} currentUid={firebaseUser.uid} />
