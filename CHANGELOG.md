@@ -3,6 +3,23 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.4.0] — Fase 2 · Maestros de Stock completos
+
+### Agregado
+- Stock → Categorías (maestro CRUD, mismo patrón que Marcas/Líneas).
+- Stock → Depósitos (maestro CRUD, con campo de dirección opcional).
+- Stock → Productos: ficha propia (no usa el patrón genérico) con
+  selects a Marca, Línea y Categoría, código/SKU opcional y precio de
+  venta. El stock por depósito queda para el módulo de Movimientos de
+  stock, todavía pendiente.
+
+### Notas de versionado
+- El número de versión vive en `firebase-config.js` (`APP_VERSION`) y
+  se refleja en el pie del menú lateral de la app. Cada entrega que
+  agrega o cambia funcionalidad suma una versión "minor" (0.X.0) acá en
+  el changelog; los ajustes menores sin funcionalidad nueva sumarían un
+  "patch" (0.X.Y).
+
 ## [0.3.0] — Fase 1 · Base (continuación)
 
 ### Agregado

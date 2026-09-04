@@ -5,9 +5,10 @@
  * FASE 1 · BASE — según sección 19 de la especificación funcional.
  * Incluye: login, layout general (sidebar + topbar), menú completo del
  * sistema, módulo de Seguridad (Usuarios + alta de nuevas cuentas),
- * Configuración (Empresa y sucursales) y el PATRÓN de maestro CRUD
- * (Marcas, Líneas) que debe replicarse para el resto de los maestros de
- * Stock (Categorías, Colores, Depósitos, etc.).
+ * Configuración (Empresa y sucursales, con logo) y los maestros de
+ * Stock: Marcas, Líneas, Categorías, Depósitos (patrón MaestroCRUD) y
+ * Productos (ficha con selects a Marca/Línea/Categoría). Falta el
+ * módulo de Movimientos de stock para completar Fase 2.
  *
  * Los módulos que todavía no se ejecutan (Facturación electrónica,
  * Tienda Online, Contabilidad) se muestran en el menú pero con pantalla
@@ -71,9 +72,9 @@ const MENU = [
     children: [
       { key: "marcas", label: "Marcas" },
       { key: "lineas", label: "Líneas" },
-      { key: "categorias", label: "Categorías", soon: true },
-      { key: "productos", label: "Productos", soon: true },
-      { key: "depositos", label: "Depósitos", soon: true },
+      { key: "categorias", label: "Categorías" },
+      { key: "productos", label: "Productos" },
+      { key: "depositos", label: "Depósitos" },
       { key: "movimientos", label: "Movimientos de stock", soon: true },
     ],
   },
@@ -585,6 +586,245 @@ function MaestroFormModal({ fields, initial, onClose, onSave }) {
                 />
               </div>
             ))}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+            <button type="submit" className="btn btn-primary" style={{ width: "auto" }} disabled={saving}>
+              {saving ? "Guardando..." : "Guardar"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Stock · Productos                                                    */
+/* No usa el patrón MaestroCRUD genérico porque necesita selects que    */
+/* referencian otros maestros (Marca, Línea, Categoría) y un campo      */
+/* numérico de precio — se arma un formulario propio, pero conserva la  */
+/* misma estructura de tabla + modal + baja lógica que el resto.        */
+/* ------------------------------------------------------------------ */
+
+/** Hook chico para traer una colección de referencia (para llenar selects). */
+function useColeccionSimple(collectionName) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    const unsub = db.collection(collectionName).orderBy("nombre").onSnapshot((snap) => {
+      setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, [collectionName]);
+  return items;
+}
+
+function ProductosPage() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [toast, setToast] = useState("");
+
+  const marcas = useColeccionSimple("marcas");
+  const lineas = useColeccionSimple("lineas");
+  const categorias = useColeccionSimple("categorias");
+
+  useEffect(() => {
+    const unsub = db.collection("productos").orderBy("nombre").onSnapshot(
+      (snap) => {
+        setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (err) => { console.error(err); setLoading(false); }
+    );
+    return () => unsub();
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2400); };
+
+  const nombrePorId = (lista, id) => (lista.find((x) => x.id === id) || {}).nombre || "—";
+
+  const handleSave = async (data) => {
+    try {
+      const { id, ...rest } = data;
+      if (id) {
+        await db.collection("productos").doc(id).update({
+          ...rest,
+          actualizadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        showToast("Producto actualizado.");
+      } else {
+        await db.collection("productos").add({
+          ...rest,
+          activo: true,
+          creadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        showToast("Producto creado.");
+      }
+      setEditing(null);
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar. Revisá los permisos.");
+    }
+  };
+
+  const toggleActivo = async (item) => {
+    try {
+      await db.collection("productos").doc(item.id).update({ activo: !item.activo });
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo cambiar el estado.");
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Productos</h1>
+          <p>Ficha de producto: marca, línea, categoría y precio de venta. El stock por depósito se carga desde Movimientos de stock (todavía no disponible).</p>
+        </div>
+        <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setEditing({})}>
+          + Nuevo
+        </button>
+      </div>
+
+      <div className="card">
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Código</th>
+                <th>Marca</th>
+                <th>Línea</th>
+                <th>Categoría</th>
+                <th>Precio venta</th>
+                <th>Estado</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8}>Cargando...</td></tr>
+              ) : items.length === 0 ? (
+                <tr><td colSpan={8} style={{ color: "var(--color-text-soft)" }}>
+                  Todavía no hay productos. Usá "+ Nuevo" para crear el primero
+                  {marcas.length === 0 ? " (necesitás al menos una marca cargada)." : "."}
+                </td></tr>
+              ) : items.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.nombre}</td>
+                  <td>{p.codigo || "—"}</td>
+                  <td>{nombrePorId(marcas, p.marcaId)}</td>
+                  <td>{nombrePorId(lineas, p.lineaId)}</td>
+                  <td>{nombrePorId(categorias, p.categoriaId)}</td>
+                  <td>{p.precioVenta != null ? `Gs. ${Number(p.precioVenta).toLocaleString("es-PY")}` : "—"}</td>
+                  <td>
+                    <span className={"status-pill " + (p.activo ? "active" : "inactive")}>
+                      {p.activo ? "Activo" : "Inactivo"}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="icon-btn" onClick={() => setEditing(p)}>Editar</button>
+                      <button className="icon-btn" onClick={() => toggleActivo(p)}>
+                        {p.activo ? "Desactivar" : "Activar"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {editing !== null ? (
+        <ProductoFormModal
+          initial={editing}
+          marcas={marcas}
+          lineas={lineas}
+          categorias={categorias}
+          onClose={() => setEditing(null)}
+          onSave={handleSave}
+        />
+      ) : null}
+
+      {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}
+
+function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSave }) {
+  const [nombre, setNombre] = useState(initial.nombre || "");
+  const [codigo, setCodigo] = useState(initial.codigo || "");
+  const [marcaId, setMarcaId] = useState(initial.marcaId || "");
+  const [lineaId, setLineaId] = useState(initial.lineaId || "");
+  const [categoriaId, setCategoriaId] = useState(initial.categoriaId || "");
+  const [precioVenta, setPrecioVenta] = useState(initial.precioVenta != null ? String(initial.precioVenta) : "");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    await onSave({
+      id: initial.id,
+      nombre,
+      codigo: codigo || null,
+      marcaId: marcaId || null,
+      lineaId: lineaId || null,
+      categoriaId: categoriaId || null,
+      precioVenta: precioVenta === "" ? null : Number(precioVenta),
+    });
+    setSaving(false);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <form onSubmit={handleSubmit}>
+          <div className="modal-header">
+            <h3>{initial.id ? "Editar producto" : "Nuevo producto"}</h3>
+            <button type="button" className="modal-close" onClick={onClose}>×</button>
+          </div>
+          <div className="modal-body">
+            <div className="field">
+              <label>Nombre</label>
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Código / SKU (opcional)</label>
+              <input value={codigo} onChange={(e) => setCodigo(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Marca</label>
+              <select value={marcaId} onChange={(e) => setMarcaId(e.target.value)}>
+                <option value="">— Sin marca —</option>
+                {marcas.map((m) => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Línea</label>
+              <select value={lineaId} onChange={(e) => setLineaId(e.target.value)}>
+                <option value="">— Sin línea —</option>
+                {lineas.map((l) => <option key={l.id} value={l.id}>{l.nombre}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Categoría</label>
+              <select value={categoriaId} onChange={(e) => setCategoriaId(e.target.value)}>
+                <option value="">— Sin categoría —</option>
+                {categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Precio de venta (Gs.)</label>
+              <input
+                type="number" min="0" step="1"
+                value={precioVenta} onChange={(e) => setPrecioVenta(e.target.value)}
+              />
+            </div>
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
@@ -1185,6 +1425,35 @@ function PageContent({ moduleKey, pageKey, currentUid }) {
         fields={[{ name: "nombre", label: "Nombre", required: true }]}
       />
     );
+  }
+
+  if (moduleKey === "stock" && pageKey === "categorias") {
+    return (
+      <MaestroCRUD
+        collectionName="categorias"
+        title="Categorías"
+        description="Maestro de categorías de producto (por ejemplo: perfumería, cuidado corporal, cabello)."
+        fields={[{ name: "nombre", label: "Nombre", required: true }]}
+      />
+    );
+  }
+
+  if (moduleKey === "stock" && pageKey === "depositos") {
+    return (
+      <MaestroCRUD
+        collectionName="depositos"
+        title="Depósitos"
+        description="Ubicaciones físicas donde se guarda stock (casa central, sucursales, depósito externo, etc.)."
+        fields={[
+          { name: "nombre", label: "Nombre", required: true },
+          { name: "direccion", label: "Dirección" },
+        ]}
+      />
+    );
+  }
+
+  if (moduleKey === "stock" && pageKey === "productos") {
+    return <ProductosPage />;
   }
 
   if (moduleKey === "seguridad" && pageKey === "usuarios") {
