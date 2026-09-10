@@ -81,7 +81,8 @@ const MENU = [
       { key: "categorias", label: "Categorías" },
       { key: "productos", label: "Productos" },
       { key: "depositos", label: "Depósitos" },
-      { key: "movimientos", label: "Movimientos de stock", soon: true },
+      { key: "traslados", label: "Traslado de mercadería" },
+      { key: "movimientos", label: "Movimientos de stock" },
     ],
   },
   {
@@ -746,15 +747,16 @@ function ProductosPage() {
                 <th>Precio mayorista</th>
                 <th>Cant. mayorista</th>
                 <th>Precio minorista</th>
+                <th>Stock</th>
                 <th>Estado</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={12}>Cargando...</td></tr>
+                <tr><td colSpan={13}>Cargando...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={12} style={{ color: "var(--color-text-soft)" }}>
+                <tr><td colSpan={13} style={{ color: "var(--color-text-soft)" }}>
                   Todavía no hay productos. Usá "+ Nuevo" para crear el primero
                   {marcas.length === 0 ? " (necesitás al menos una marca cargada)." : "."}
                 </td></tr>
@@ -783,6 +785,7 @@ function ProductosPage() {
                   <td>{formatearGs(p.precioMayorista)}</td>
                   <td>{p.cantidadMayorista != null ? p.cantidadMayorista : "—"}</td>
                   <td>{formatearGs(p.precioMinorista)}</td>
+                  <td>{p.stockTotal != null ? p.stockTotal : 0}</td>
                   <td>
                     <span className={"status-pill " + (p.activo ? "active" : "inactive")}>
                       {p.activo ? "Activo" : "Inactivo"}
@@ -1011,6 +1014,546 @@ function ProductoFormModal({ initial, marcas, lineas, categorias, onClose, onSav
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* Stock · Traslado de mercadería                                       */
+/* Mueve stock entre depósitos usando una "nota de remisión": un         */
+/* documento con cabecera (origen, destino, fecha) y una lista de ítems  */
+/* (producto + cantidad). Al confirmarla, se genera UN movimiento de     */
+/* stock inmutable por cada ítem (ver más abajo) y se actualiza          */
+/* producto.stockPorDeposito — todo en una sola transacción atómica.     */
+/*                                                                        */
+/* La remisión en sí también es inmutable (colección `remisiones`): no   */
+/* se edita ni se borra una vez creada. Si hay un error, se hace otra    */
+/* remisión en sentido inverso.                                          */
+/* ------------------------------------------------------------------ */
+
+async function crearTrasladoMercaderia({
+  depositoOrigenId, depositoDestinoId, items, observaciones, usuarioId, usuarioNombre,
+}) {
+  const contadorRemisionRef = db.collection("contadores").doc("remisiones");
+  const contadorMovRef = db.collection("contadores").doc("movimientosStock");
+  const remisionRef = db.collection("remisiones").doc();
+  const productoRefs = items.map((it) => db.collection("productos").doc(it.productoId));
+
+  await db.runTransaction(async (tx) => {
+    // Todas las lecturas van primero (regla de las transacciones de Firestore).
+    const productoDocs = await Promise.all(productoRefs.map((ref) => tx.get(ref)));
+    const contadorRemisionDoc = await tx.get(contadorRemisionRef);
+    const contadorMovDoc = await tx.get(contadorMovRef);
+
+    let siguienteRemision = (contadorRemisionDoc.exists ? contadorRemisionDoc.data().ultimo || 0 : 0) + 1;
+    let siguienteMov = contadorMovDoc.exists ? contadorMovDoc.data().ultimo || 0 : 0;
+    const codigoRemision = "R-" + String(siguienteRemision).padStart(6, "0");
+
+    const itemsGuardados = [];
+
+    items.forEach((it, idx) => {
+      const doc = productoDocs[idx];
+      if (!doc.exists) throw new Error("Uno de los productos ya no existe.");
+      const nombreProducto = doc.data().nombre;
+      const stockPorDeposito = { ...(doc.data().stockPorDeposito || {}) };
+      const actualOrigen = stockPorDeposito[depositoOrigenId] || 0;
+      if (actualOrigen < it.cantidad) {
+        throw new Error(`Stock insuficiente de "${nombreProducto}" en el depósito de origen (hay ${actualOrigen}, se pidió ${it.cantidad}).`);
+      }
+      stockPorDeposito[depositoOrigenId] = actualOrigen - it.cantidad;
+      stockPorDeposito[depositoDestinoId] = (stockPorDeposito[depositoDestinoId] || 0) + it.cantidad;
+      const stockTotal = Object.values(stockPorDeposito).reduce((a, b) => a + b, 0);
+
+      tx.update(productoRefs[idx], {
+        stockPorDeposito,
+        stockTotal,
+        actualizadoEn: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      siguienteMov += 1;
+      const codigoMovimiento = "M-" + String(siguienteMov).padStart(6, "0");
+      const movRef = db.collection("movimientosStock").doc();
+      tx.set(movRef, {
+        codigoMovimiento,
+        tipo: "transferencia",
+        productoId: it.productoId,
+        depositoOrigenId,
+        depositoDestinoId,
+        cantidad: it.cantidad,
+        motivo: `Traslado ${codigoRemision}`,
+        remisionId: remisionRef.id,
+        codigoRemision,
+        usuarioId,
+        usuarioNombre,
+        fecha: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      itemsGuardados.push({ productoId: it.productoId, nombreProducto, cantidad: it.cantidad });
+    });
+
+    tx.set(contadorRemisionRef, { ultimo: siguienteRemision }, { merge: true });
+    tx.set(contadorMovRef, { ultimo: siguienteMov }, { merge: true });
+    tx.set(remisionRef, {
+      codigoRemision,
+      depositoOrigenId,
+      depositoDestinoId,
+      observaciones: observaciones || null,
+      items: itemsGuardados,
+      totalItems: itemsGuardados.length,
+      usuarioId,
+      usuarioNombre,
+      fecha: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+}
+
+/** Buscador simple de producto: filtra por nombre, código interno o código de barra. */
+function ProductoPicker({ productos, value, onChange, placeholder }) {
+  const [query, setQuery] = useState("");
+  const [abierto, setAbierto] = useState(false);
+
+  const seleccionado = productos.find((p) => p.id === value);
+
+  const resultados = useMemo(() => {
+    if (!query.trim()) return productos.slice(0, 20);
+    const q = query.trim().toLowerCase();
+    return productos
+      .filter((p) =>
+        (p.nombre || "").toLowerCase().includes(q) ||
+        (p.codigoInterno || "").toLowerCase().includes(q) ||
+        (p.codigoBarraPrincipal || "").toLowerCase().includes(q)
+      )
+      .slice(0, 20);
+  }, [productos, query]);
+
+  if (seleccionado && !abierto) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--color-border-strong)", borderRadius: "var(--radius)", padding: "8px 11px" }}>
+        {seleccionado.imagenDataUrl ? (
+          <img src={seleccionado.imagenDataUrl} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }} />
+        ) : null}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{seleccionado.nombre}</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-soft)" }}>{seleccionado.codigoInterno}</div>
+        </div>
+        <button type="button" className="icon-btn" onClick={() => { setAbierto(true); setQuery(""); }}>Cambiar</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <input
+        placeholder={placeholder || "Buscar por nombre, código interno o código de barra..."}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onFocus={() => setAbierto(true)}
+        autoFocus={abierto}
+      />
+      {abierto ? (
+        <div style={{ border: "1px solid var(--color-border)", borderRadius: "var(--radius)", marginTop: 6, maxHeight: 200, overflowY: "auto" }}>
+          {resultados.length === 0 ? (
+            <div style={{ padding: 10, fontSize: 12.5, color: "var(--color-text-soft)" }}>Sin resultados.</div>
+          ) : resultados.map((p) => (
+            <button
+              type="button"
+              key={p.id}
+              onClick={() => { onChange(p.id); setAbierto(false); }}
+              style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, padding: "8px 11px", background: "none", border: "none", borderBottom: "1px solid var(--color-border)", textAlign: "left", cursor: "pointer", fontSize: 13 }}
+            >
+              <span style={{ flex: 1 }}>{p.nombre}</span>
+              <span style={{ fontSize: 11.5, color: "var(--color-text-soft)" }}>{p.codigoInterno}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TrasladoMercaderiaPage({ currentUid, currentUserName }) {
+  const [remisiones, setRemisiones] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creando, setCreando] = useState(false);
+  const [verDetalle, setVerDetalle] = useState(null);
+  const [toast, setToast] = useState("");
+
+  const depositos = useColeccionSimple("depositos");
+
+  useEffect(() => {
+    const unsub = db.collection("remisiones").orderBy("fecha", "desc").limit(100).onSnapshot(
+      (snap) => {
+        setRemisiones(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (err) => { console.error(err); setLoading(false); }
+    );
+    return () => unsub();
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
+  const nombreDeposito = (id) => (depositos.find((d) => d.id === id) || {}).nombre || "—";
+
+  const handleCrear = async (datos) => {
+    await crearTrasladoMercaderia({ ...datos, usuarioId: currentUid, usuarioNombre: currentUserName });
+    showToast(`Remisión creada. El stock ya se actualizó.`);
+    setCreando(false);
+  };
+
+  if (creando) {
+    return (
+      <RemisionForm
+        depositos={depositos}
+        onCancel={() => setCreando(false)}
+        onCrear={handleCrear}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Traslado de mercadería</h1>
+          <p>Mueve stock de un depósito a otro con una nota de remisión. Genera automáticamente el historial en Movimientos de stock.</p>
+        </div>
+        <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setCreando(true)}>
+          + Nueva remisión
+        </button>
+      </div>
+
+      <div className="card">
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Remisión</th>
+                <th>Fecha</th>
+                <th>Origen</th>
+                <th>Destino</th>
+                <th>Ítems</th>
+                <th>Usuario</th>
+                <th>Observaciones</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8}>Cargando...</td></tr>
+              ) : remisiones.length === 0 ? (
+                <tr><td colSpan={8} style={{ color: "var(--color-text-soft)" }}>
+                  Todavía no hay remisiones. Usá "+ Nueva remisión" para trasladar mercadería entre depósitos
+                  {depositos.length < 2 ? " (necesitás al menos dos depósitos cargados)." : "."}
+                </td></tr>
+              ) : remisiones.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.codigoRemision}</td>
+                  <td>{r.fecha && r.fecha.toDate ? r.fecha.toDate().toLocaleString("es-PY") : "—"}</td>
+                  <td>{nombreDeposito(r.depositoOrigenId)}</td>
+                  <td>{nombreDeposito(r.depositoDestinoId)}</td>
+                  <td>{r.totalItems}</td>
+                  <td>{r.usuarioNombre || "—"}</td>
+                  <td>{r.observaciones || "—"}</td>
+                  <td>
+                    <button className="icon-btn" onClick={() => setVerDetalle(r)}>Ver ítems</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {verDetalle ? (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setVerDetalle(null); }}>
+          <div className="modal">
+            <div className="modal-header">
+              <h3>Detalle de {verDetalle.codigoRemision}</h3>
+              <button type="button" className="modal-close" onClick={() => setVerDetalle(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 12.5, color: "var(--color-text-soft)", marginTop: 0 }}>
+                {nombreDeposito(verDetalle.depositoOrigenId)} → {nombreDeposito(verDetalle.depositoDestinoId)}
+              </p>
+              <table className="data-table">
+                <thead><tr><th>Producto</th><th>Cantidad</th></tr></thead>
+                <tbody>
+                  {(verDetalle.items || []).map((it, i) => (
+                    <tr key={i}><td>{it.nombreProducto}</td><td>{it.cantidad}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-secondary" onClick={() => setVerDetalle(null)}>Cerrar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}
+
+function RemisionForm({ depositos, onCancel, onCrear }) {
+  const [depositoOrigenId, setDepositoOrigenId] = useState("");
+  const [depositoDestinoId, setDepositoDestinoId] = useState("");
+  const [observaciones, setObservaciones] = useState("");
+  const [items, setItems] = useState([{ productoId: "", cantidad: "" }]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const productos = useColeccionSimple("productos");
+
+  const stockEnOrigen = (productoId) => {
+    if (!productoId || !depositoOrigenId) return null;
+    const p = productos.find((x) => x.id === productoId);
+    if (!p) return null;
+    return (p.stockPorDeposito || {})[depositoOrigenId] || 0;
+  };
+
+  const cambiarItem = (i, campo, valor) =>
+    setItems((arr) => arr.map((it, idx) => (idx === i ? { ...it, [campo]: valor } : it)));
+  const agregarItem = () => setItems((arr) => [...arr, { productoId: "", cantidad: "" }]);
+  const quitarItem = (i) => setItems((arr) => arr.filter((_, idx) => idx !== i));
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+
+    if (!depositoOrigenId || !depositoDestinoId) {
+      setError("Elegí depósito de origen y de destino.");
+      return;
+    }
+    if (depositoOrigenId === depositoDestinoId) {
+      setError("Origen y destino no pueden ser el mismo depósito.");
+      return;
+    }
+    const itemsValidos = items.filter((it) => it.productoId && it.cantidad !== "" && Number(it.cantidad) > 0);
+    if (itemsValidos.length === 0) {
+      setError("Agregá al menos un producto con cantidad mayor a 0.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onCrear({
+        depositoOrigenId,
+        depositoDestinoId,
+        observaciones,
+        items: itemsValidos.map((it) => ({ productoId: it.productoId, cantidad: Number(it.cantidad) })),
+      });
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "No se pudo crear la remisión.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Nueva remisión</h1>
+          <p>Elegí origen, destino, y los productos con la cantidad a trasladar.</p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit}>
+        {error ? <div className="form-error">{error}</div> : null}
+
+        <div className="card">
+          <div className="card-body">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div className="field">
+                <label>Depósito de origen</label>
+                <select value={depositoOrigenId} onChange={(e) => setDepositoOrigenId(e.target.value)}>
+                  <option value="">— Elegir —</option>
+                  {depositos.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>Depósito de destino</label>
+                <select value={depositoDestinoId} onChange={(e) => setDepositoDestinoId(e.target.value)}>
+                  <option value="">— Elegir —</option>
+                  {depositos.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="field" style={{ marginTop: 4 }}>
+              <label>Observaciones (opcional)</label>
+              <input value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Ej: transportista, número de guía externa..." />
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><h3>Productos a trasladar</h3></div>
+          <div className="card-body">
+            {items.map((it, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <ProductoPicker
+                    productos={productos}
+                    value={it.productoId}
+                    onChange={(id) => cambiarItem(i, "productoId", id)}
+                  />
+                  {it.productoId && depositoOrigenId ? (
+                    <p style={{ fontSize: 11.5, color: "var(--color-text-soft)", margin: "4px 0 0" }}>
+                      Stock actual en origen: {stockEnOrigen(it.productoId)}
+                    </p>
+                  ) : null}
+                </div>
+                <input
+                  type="number" min="1" step="1" placeholder="Cantidad"
+                  style={{ width: 110 }}
+                  value={it.cantidad}
+                  onChange={(e) => cambiarItem(i, "cantidad", e.target.value)}
+                />
+                <button type="button" className="icon-btn" onClick={() => quitarItem(i)} disabled={items.length === 1}>
+                  Quitar
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-secondary" style={{ width: "auto" }} onClick={agregarItem}>
+              + Agregar producto
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-secondary" style={{ width: "auto" }} onClick={onCancel}>Cancelar</button>
+          <button type="submit" className="btn btn-primary" style={{ width: "auto" }} disabled={saving}>
+            {saving ? "Guardando..." : "Confirmar remisión"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Stock · Movimientos de stock (auditoría, solo lectura)               */
+/* Muestra el historial completo de movimientos generados por otras     */
+/* operaciones (por ahora, Traslado de mercadería; más adelante también */
+/* Compras y Facturación). No se crean movimientos manualmente acá — es */
+/* el registro de auditoría de "cómo se movió la mercadería", nunca se  */
+/* edita ni se borra nada desde esta pantalla.                          */
+/* ------------------------------------------------------------------ */
+
+const TIPOS_MOVIMIENTO = {
+  ingreso: "Ingreso",
+  egreso: "Egreso",
+  transferencia: "Transferencia",
+  ajuste: "Ajuste",
+};
+
+function MovimientoStockPage() {
+  const [movimientos, setMovimientos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filtroTipo, setFiltroTipo] = useState("");
+  const [filtroProductoId, setFiltroProductoId] = useState("");
+
+  const productos = useColeccionSimple("productos");
+  const depositos = useColeccionSimple("depositos");
+
+  useEffect(() => {
+    const unsub = db.collection("movimientosStock").orderBy("fecha", "desc").limit(300).onSnapshot(
+      (snap) => {
+        setMovimientos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (err) => { console.error(err); setLoading(false); }
+    );
+    return () => unsub();
+  }, []);
+
+  const nombreProducto = (id) => (productos.find((p) => p.id === id) || {}).nombre || "—";
+  const nombreDeposito = (id) => (depositos.find((d) => d.id === id) || {}).nombre || "—";
+
+  const movimientosFiltrados = movimientos.filter((m) => {
+    if (filtroTipo && m.tipo !== filtroTipo) return false;
+    if (filtroProductoId && m.productoId !== filtroProductoId) return false;
+    return true;
+  });
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Movimientos de stock</h1>
+          <p>Historial de auditoría — de solo lectura. Cada fila queda registrada para siempre; para corregir algo se hace un traslado o ajuste nuevo, nunca se edita el histórico.</p>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-body" style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
+            <label>Tipo</label>
+            <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value)}>
+              <option value="">Todos</option>
+              {Object.entries(TIPOS_MOVIMIENTO).map(([k, label]) => (
+                <option key={k} value={k}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 0, minWidth: 260, flex: 1 }}>
+            <label>Producto</label>
+            {filtroProductoId ? (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 13 }}>{nombreProducto(filtroProductoId)}</span>
+                <button type="button" className="icon-btn" onClick={() => setFiltroProductoId("")}>Quitar filtro</button>
+              </div>
+            ) : (
+              <ProductoPicker productos={productos} value={filtroProductoId} onChange={setFiltroProductoId} placeholder="Filtrar por producto..." />
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Fecha</th>
+                <th>Tipo</th>
+                <th>Producto</th>
+                <th>Origen</th>
+                <th>Destino</th>
+                <th>Cantidad</th>
+                <th>Usuario</th>
+                <th>Observación</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={9}>Cargando...</td></tr>
+              ) : movimientosFiltrados.length === 0 ? (
+                <tr><td colSpan={9} style={{ color: "var(--color-text-soft)" }}>
+                  No hay movimientos {filtroTipo || filtroProductoId ? "con ese filtro" : "registrados todavía"}.
+                </td></tr>
+              ) : movimientosFiltrados.map((m) => (
+                <tr key={m.id}>
+                  <td>{m.codigoMovimiento}</td>
+                  <td>{m.fecha && m.fecha.toDate ? m.fecha.toDate().toLocaleString("es-PY") : "—"}</td>
+                  <td>{TIPOS_MOVIMIENTO[m.tipo] || m.tipo}</td>
+                  <td>{nombreProducto(m.productoId)}</td>
+                  <td>{m.depositoOrigenId ? nombreDeposito(m.depositoOrigenId) : "—"}</td>
+                  <td>{m.depositoDestinoId ? nombreDeposito(m.depositoDestinoId) : "—"}</td>
+                  <td>{m.cantidad}</td>
+                  <td>{m.usuarioNombre || "—"}</td>
+                  <td>{m.motivo || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Configuración · Empresa y sucursales                                 */
@@ -1573,11 +2116,19 @@ function UsuarioFormModal({ initial, onClose, onSave }) {
 /* Router de contenido                                                  */
 /* ------------------------------------------------------------------ */
 
-function PageContent({ moduleKey, pageKey, currentUid }) {
+function PageContent({ moduleKey, pageKey, currentUid, currentUserName }) {
   if (moduleKey === "inicio") return <Dashboard />;
 
   const moduleDef = MENU.find((m) => m.key === moduleKey);
   if (moduleDef?.notActivated) return <ModuloNoActivado label={moduleDef.label} />;
+
+  if (moduleKey === "stock" && pageKey === "traslados") {
+    return <TrasladoMercaderiaPage currentUid={currentUid} currentUserName={currentUserName} />;
+  }
+
+  if (moduleKey === "stock" && pageKey === "movimientos") {
+    return <MovimientoStockPage />;
+  }
 
   if (moduleKey === "stock" && pageKey === "marcas") {
     return (
@@ -1746,7 +2297,12 @@ function AppShell({ firebaseUser }) {
           onOpenMobileNav={() => setMobileNavOpen(true)}
         />
         <main className="content">
-          <PageContent moduleKey={activeModule} pageKey={activePage} currentUid={firebaseUser.uid} />
+          <PageContent
+            moduleKey={activeModule}
+            pageKey={activePage}
+            currentUid={firebaseUser.uid}
+            currentUserName={userDoc?.nombre || firebaseUser.email}
+          />
         </main>
       </div>
     </div>

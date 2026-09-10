@@ -3,6 +3,35 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.7.0] — Traslado de mercadería + auditoría de stock
+
+*(Reemplaza por completo el enfoque de la versión 0.7.0 anterior — esa
+no llegó a subirse al repositorio.)*
+
+### Agregado
+- **Stock → Traslado de mercadería**: mueve stock entre depósitos con
+  una nota de remisión (código autogenerado `R-000001`, depósito de
+  origen y destino, observaciones, y una lista de productos con
+  cantidad). Se puede agregar más de un producto por remisión. Valida
+  que haya stock suficiente en el origen para cada producto antes de
+  confirmar.
+- **Stock → Movimientos de stock** pasó a ser una pantalla de solo
+  lectura: un historial de auditoría de todo lo que se movió, con
+  filtros por tipo y por producto. Ya no tiene botón para crear
+  movimientos sueltos a mano — los movimientos se generan
+  automáticamente desde Traslado de mercadería (y, más adelante, desde
+  Compras y Facturación cuando se construyan esos módulos).
+- Colección `remisiones` (inmutable, mismo patrón que
+  `movimientosStock`): cada traslado confirmado genera un movimiento de
+  tipo "Transferencia" por cada producto, todo en una sola transacción
+  junto con la actualización de `producto.stockPorDeposito`.
+
+### Quitado
+- Se sacó el formulario genérico de "Nuevo movimiento" (que permitía
+  crear Ingreso/Egreso/Transferencia/Ajuste sueltos a mano) — no
+  encajaba con la idea de que Movimientos de stock sea un registro de
+  auditoría, no un lugar para cargar movimientos manualmente.
+
 ## [0.6.1] — Corrección de bug
 
 ### Corregido

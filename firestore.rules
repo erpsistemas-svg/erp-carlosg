@@ -109,6 +109,15 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /remisiones/{docId} {
+      // Nota de remisión de un traslado de mercadería entre depósitos.
+      // Igual que movimientosStock: se crea una vez y nunca se edita ni
+      // se borra (una corrección se hace con otra remisión inversa).
+      allow read: if hasRole(['admin', 'gerencia', 'deposito', 'compras']);
+      allow create: if hasRole(['admin', 'gerencia', 'deposito']);
+      allow update, delete: if false;
+    }
+
     match /ventas/{docId} {
       allow read: if hasRole(['admin', 'gerencia', 'cajero', 'vendedor', 'finanzas']);
       allow create: if hasRole(['admin', 'gerencia', 'cajero']);
