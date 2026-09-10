@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ficha de activo</title>
+
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#101B33" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+
+  <style>
+    body { background: var(--bg); }
+    .ficha-wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+    .ficha-card {
+      background: #fff;
+      border-radius: 14px;
+      max-width: 440px;
+      width: 100%;
+      padding: 22px;
+      box-shadow: 0 2px 10px rgba(16,27,51,0.08);
+    }
+    .ficha-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .ficha-brand img { height: 24px; }
+    .ficha-brand span {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .ficha-titulo { font-size: 20px; font-weight: 700; margin: 0 0 4px 0; }
+    .ficha-fila {
+      display: flex;
+      justify-content: space-between;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13.5px;
+      gap: 12px;
+    }
+    .ficha-fila:last-child { border-bottom: none; }
+    .ficha-fila .label { color: var(--text-muted); }
+    .ficha-fila .valor { text-align: right; font-weight: 500; }
+    .ficha-desc {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--text);
+    }
+    .ficha-estado-msg {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="ficha-wrap">
+    <div class="ficha-card" id="contenido">
+      <div class="ficha-estado-msg" id="mensaje">Cargando...</div>
+    </div>
+  </div>
+
+  <!-- Firebase (compat), solo lectura pública de "activos".
+       Se carga también Auth aunque esta página no pida login: firebase-config.js
+       (compartido con la app principal) llama a firebase.auth() al inicializar,
+       y sin este script esa llamada rompe silenciosamente toda la página. -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+
+  <script>
+    // Red de seguridad: si algo falla ANTES de llegar a cargarFicha() (ej. un
+    // script externo que no carga), que se vea un aviso en vez de quedarse
+    // colgado en "Cargando..." para siempre sin ninguna pista de qué pasó.
+    window.addEventListener('error', (e) => {
+      const contenido = document.getElementById('contenido');
+      if (contenido && contenido.innerHTML.includes('Cargando')) {
+        contenido.innerHTML = `<div class="ficha-estado-msg">Ocurrió un error inesperado al cargar la página.<br><span style="font-family: var(--font-mono); font-size: 11px;">${e.message || ''}</span></div>`;
+      }
+    });
+
+    const ESTADO_LABELS = { activo: 'Activo', mantenimiento: 'En mantenimiento', baja: 'De baja' };
+
+    function formatearFila(label, valor) {
+      if (!valor) return '';
+      return `<div class="ficha-fila"><span class="label">${label}</span><span class="valor">${valor}</span></div>`;
+    }
+
+    async function cargarFicha() {
+      const params = new URLSearchParams(window.location.search);
+      const id = params.get('id');
+      const contenido = document.getElementById('contenido');
+
+      if (!id) {
+        contenido.innerHTML = '<div class="ficha-estado-msg">Falta el código del activo en el link.</div>';
+        return;
+      }
+
+      try {
+        const snap = await db.collection('activos').doc(id).get();
+        if (!snap.exists) {
+          contenido.innerHTML = '<div class="ficha-estado-msg">No se encontró ningún activo con este código.</div>';
+          return;
+        }
+        const a = snap.data();
+
+        // Nombre y logo de empresa (documento público, sin datos sensibles).
+        let brandHtml = '<span class="mark" style="font-family: var(--font-mono); color: var(--accent); font-size:12px;">#</span>';
+        let nombreEmpresa = '';
+        try {
+          const confSnap = await db.collection('configuracion').doc('empresa').get();
+          if (confSnap.exists) {
+            const c = confSnap.data();
+            nombreEmpresa = c.nombreEmpresa || '';
+            if (c.logoBase64) brandHtml = `<img src="${c.logoBase64}" alt="Logo" />`;
+          }
+        } catch (e) { /* si falla, seguimos sin logo */ }
+
+        const ubicacion = [a.pisoNombre, a.depositoNombre, a.rackNombre, a.filaNombre, a.columnaNombre]
+          .filter(Boolean).join(' / ') || '-';
+
+        contenido.innerHTML = `
+          <div class="ficha-brand">${brandHtml}<span>${nombreEmpresa || 'Ficha de activo'}</span></div>
+          ${a.fotoBase64 ? `<img src="${a.fotoBase64}" alt="${a.nombre}" style="width:100%;max-height:200px;object-fit:cover;border-radius:10px;margin-bottom:12px;" />` : ''}
+          <h1 class="ficha-titulo">${a.nombre}</h1>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">${a.codigo || ''}</div>
+          <div class="role-badge">${ESTADO_LABELS[a.estado] || a.estado || ''}</div>
+          <div style="margin-top:14px;">
+            ${formatearFila('Tipo', a.tipoNombre)}
+            ${formatearFila('Cantidad', a.cantidad)}
+            ${formatearFila('Fecha de ingreso', a.fechaIngreso)}
+            ${formatearFila('Ubicación', ubicacion)}
+          </div>
+          ${a.descripcion ? `<div class="ficha-desc"><div style="font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color: var(--text-muted); margin-bottom:6px;">Descripción</div>${a.descripcion}</div>` : ''}
+        `;
+      } catch (err) {
+        console.error('Error cargando ficha de activo:', err);
+        const codigo = err && err.code ? ` (${err.code})` : '';
+        contenido.innerHTML = `<div class="ficha-estado-msg">No se pudo cargar la ficha${codigo}.<br>Si el problema persiste, avisá al administrador del sistema.</div>`;
+      }
+    }
+
+    cargarFicha();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* no pasa nada si falla */ });
+    }
+  </script>
+</body>
+</html>
