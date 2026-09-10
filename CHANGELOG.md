@@ -3,6 +3,17 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.6.1] — Corrección de bug
+
+### Corregido
+- En páginas con tablas anchas (como Productos), toda la pantalla se
+  corría hacia la derecha en vez de que solo la tabla scrolleara —
+  bug clásico de CSS Grid: la columna de contenido no tenía
+  `min-width: 0`, así que crecía para acomodar la tabla y empujaba todo
+  lo demás (barra superior incluida) fuera de la pantalla. Se agregó
+  la clase `.main-panel` con `min-width: 0` para que ahora sea
+  `.table-scroll` la única parte que scrollea horizontalmente.
+
 ## [0.6.0] — Responsive + imagen de producto
 
 ### Agregado

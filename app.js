@@ -1736,7 +1736,7 @@ function AppShell({ firebaseUser }) {
         logoDataUrl={logoDataUrl}
         onCloseMobile={() => setMobileNavOpen(false)}
       />
-      <div>
+      <div className="main-panel">
         <Topbar
           userDoc={userDoc}
           firebaseUser={firebaseUser}

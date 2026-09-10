@@ -197,6 +197,13 @@ a { color: var(--color-accent-strong); text-decoration: none; }
   transition: grid-template-columns .15s ease;
 }
 
+.main-panel {
+  /* Sin esto, una tabla ancha hace que la columna "1fr" del grid crezca
+     para contenerla y empuja TODA la página hacia la derecha, en vez de
+     que sea la tabla la que scrollee sola (ver .table-scroll). */
+  min-width: 0;
+}
+
 .shell.collapsed {
   grid-template-columns: var(--sidebar-w-collapsed) 1fr;
 }
