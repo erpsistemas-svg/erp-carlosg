@@ -3,6 +3,19 @@
 Versionado semántico informal: patch para correcciones, minor para
 nuevas funcionalidades (sección 17.2 de la especificación funcional).
 
+## [0.8.0] — Exportar Productos a PDF y Excel
+
+### Agregado
+- En Stock → Productos: botones "Exportar PDF" y "Exportar Excel" junto
+  al título. Ambos exportan exactamente lo que está cargado en pantalla
+  (código interno, nombre, código de barra, marca, línea, categoría,
+  precios mayorista/minorista, stock y estado).
+- El PDF incluye el logo de la empresa (el mismo que se subió en
+  Configuración) arriba de la tabla, junto con el nombre de la empresa
+  y la fecha de generación.
+- Todo corre en el navegador, sin backend: se agregaron las librerías
+  SheetJS (Excel) y jsPDF + autoTable (PDF) vía CDN en `index.html`.
+
 ## [0.7.0] — Traslado de mercadería + auditoría de stock
 
 *(Reemplaza por completo el enfoque de la versión 0.7.0 anterior — esa

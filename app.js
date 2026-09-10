@@ -664,11 +664,105 @@ async function crearProductoConCodigo(datosProducto) {
   });
 }
 
-function ProductosPage() {
+/**
+ * Exportación de Productos a Excel (SheetJS) y PDF (jsPDF + autoTable).
+ * Ambas corren enteramente en el navegador — no hay servidor de por
+ * medio, así que solo exportan lo que ya está cargado en pantalla.
+ */
+
+function exportarProductosExcel({ items, marcas, lineas, categorias }) {
+  const nombrePorId = (lista, id) => (lista.find((x) => x.id === id) || {}).nombre || "";
+
+  const filas = items.map((p) => ({
+    "Código interno": p.codigoInterno || "",
+    "Nombre / Descripción": p.nombre || "",
+    "Código de barra": p.codigoBarraPrincipal || "",
+    "Marca": nombrePorId(marcas, p.marcaId),
+    "Línea": nombrePorId(lineas, p.lineaId),
+    "Categoría": nombrePorId(categorias, p.categoriaId),
+    "Precio mayorista (Gs.)": p.precioMayorista != null ? Number(p.precioMayorista) : "",
+    "Cantidad mayorista": p.cantidadMayorista != null ? Number(p.cantidadMayorista) : "",
+    "Precio minorista (Gs.)": p.precioMinorista != null ? Number(p.precioMinorista) : "",
+    "Stock": p.stockTotal != null ? Number(p.stockTotal) : 0,
+    "Estado": p.activo ? "Activo" : "Inactivo",
+  }));
+
+  const hoja = XLSX.utils.json_to_sheet(filas);
+  const libro = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(libro, hoja, "Productos");
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(libro, `productos_${fecha}.xlsx`);
+}
+
+/** Carga una imagen y devuelve sus dimensiones naturales (para no deformar el logo en el PDF). */
+function obtenerDimensionesImagen(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+async function exportarProductosPDF({ items, marcas, lineas, categorias, empresaNombre, logoDataUrl }) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+  let y = 14;
+
+  if (logoDataUrl) {
+    const dims = await obtenerDimensionesImagen(logoDataUrl);
+    if (dims && dims.w > 0) {
+      const anchoMax = 28; // mm
+      const alto = anchoMax * (dims.h / dims.w);
+      doc.addImage(logoDataUrl, "PNG", 14, y, anchoMax, alto);
+    }
+  }
+
+  doc.setFontSize(14);
+  doc.setTextColor(33, 32, 29);
+  doc.text(empresaNombre || "Productos", 50, y + 6);
+
+  doc.setFontSize(9);
+  doc.setTextColor(110, 103, 96);
+  doc.text(`Listado de productos — ${new Date().toLocaleDateString("es-PY")}`, 50, y + 12);
+
+  const nombrePorId = (lista, id) => (lista.find((x) => x.id === id) || {}).nombre || "";
+  const formatearGsPdf = (v) => (v != null ? Number(v).toLocaleString("es-PY") : "");
+
+  const filas = items.map((p) => [
+    p.codigoInterno || "",
+    p.nombre || "",
+    p.codigoBarraPrincipal || "",
+    nombrePorId(marcas, p.marcaId),
+    nombrePorId(lineas, p.lineaId),
+    nombrePorId(categorias, p.categoriaId),
+    formatearGsPdf(p.precioMayorista),
+    p.cantidadMayorista != null ? p.cantidadMayorista : "",
+    formatearGsPdf(p.precioMinorista),
+    p.stockTotal != null ? p.stockTotal : 0,
+    p.activo ? "Activo" : "Inactivo",
+  ]);
+
+  doc.autoTable({
+    startY: y + 22,
+    head: [["Código", "Nombre / Descripción", "Cód. barra", "Marca", "Línea", "Categoría", "P. mayorista", "Cant. may.", "P. minorista", "Stock", "Estado"]],
+    body: filas,
+    styles: { fontSize: 7.5, cellPadding: 2 },
+    headStyles: { fillColor: [156, 59, 87], textColor: 255 },
+    alternateRowStyles: { fillColor: [247, 245, 241] },
+  });
+
+  const fecha = new Date().toISOString().slice(0, 10);
+  doc.save(`productos_${fecha}.pdf`);
+}
+
+function ProductosPage({ empresaNombre, logoDataUrl }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [toast, setToast] = useState("");
+  const [exportandoPdf, setExportandoPdf] = useState(false);
 
   const marcas = useColeccionSimple("marcas");
   const lineas = useColeccionSimple("lineas");
@@ -686,6 +780,27 @@ function ProductosPage() {
   }, []);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
+
+  const handleExportarExcel = () => {
+    try {
+      exportarProductosExcel({ items, marcas, lineas, categorias });
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo generar el Excel.");
+    }
+  };
+
+  const handleExportarPdf = async () => {
+    setExportandoPdf(true);
+    try {
+      await exportarProductosPDF({ items, marcas, lineas, categorias, empresaNombre, logoDataUrl });
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo generar el PDF.");
+    } finally {
+      setExportandoPdf(false);
+    }
+  };
 
   const nombrePorId = (lista, id) => (lista.find((x) => x.id === id) || {}).nombre || "—";
 
@@ -727,9 +842,17 @@ function ProductosPage() {
           <h1>Productos</h1>
           <p>Código interno autogenerado, código de barra, marca/línea/categoría y precios mayorista/minorista. El stock por depósito se carga desde Movimientos de stock (todavía no disponible).</p>
         </div>
-        <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setEditing({})}>
-          + Nuevo
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-secondary" style={{ width: "auto" }} onClick={handleExportarPdf} disabled={exportandoPdf || items.length === 0}>
+            {exportandoPdf ? "Generando..." : "Exportar PDF"}
+          </button>
+          <button className="btn btn-secondary" style={{ width: "auto" }} onClick={handleExportarExcel} disabled={items.length === 0}>
+            Exportar Excel
+          </button>
+          <button className="btn btn-primary" style={{ width: "auto" }} onClick={() => setEditing({})}>
+            + Nuevo
+          </button>
+        </div>
       </div>
 
       <div className="card">
@@ -2116,7 +2239,7 @@ function UsuarioFormModal({ initial, onClose, onSave }) {
 /* Router de contenido                                                  */
 /* ------------------------------------------------------------------ */
 
-function PageContent({ moduleKey, pageKey, currentUid, currentUserName }) {
+function PageContent({ moduleKey, pageKey, currentUid, currentUserName, empresaNombre, logoDataUrl }) {
   if (moduleKey === "inicio") return <Dashboard />;
 
   const moduleDef = MENU.find((m) => m.key === moduleKey);
@@ -2178,7 +2301,7 @@ function PageContent({ moduleKey, pageKey, currentUid, currentUserName }) {
   }
 
   if (moduleKey === "stock" && pageKey === "productos") {
-    return <ProductosPage />;
+    return <ProductosPage empresaNombre={empresaNombre} logoDataUrl={logoDataUrl} />;
   }
 
   if (moduleKey === "seguridad" && pageKey === "usuarios") {
@@ -2302,6 +2425,8 @@ function AppShell({ firebaseUser }) {
             pageKey={activePage}
             currentUid={firebaseUser.uid}
             currentUserName={userDoc?.nombre || firebaseUser.email}
+            empresaNombre={empresaNombre}
+            logoDataUrl={logoDataUrl}
           />
         </main>
       </div>
